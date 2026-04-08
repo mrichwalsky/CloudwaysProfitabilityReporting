@@ -1,0 +1,18 @@
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# OS / editor
+.vscode/
+.idea/
+
+# Build / deps (just in case)
+node_modules/
+vendor/
+
+# WordPress
+wp-config.php
+wp-content/uploads/
+
