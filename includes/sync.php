@@ -189,6 +189,27 @@ function cw_profit_run_sync(): array {
 				}
 			}
 
+			// Remove apps that no longer exist in Cloudways for this server.
+			$delete_where = "(server_id = %d OR (server_id IS NULL AND cloudways_server_id = %s))";
+			if (!empty($app_ids)) {
+				$delete_placeholders = implode(',', array_fill(0, count($app_ids), '%s'));
+				$delete_sql = "DELETE FROM {$apps_table} WHERE {$delete_where} AND cloudways_app_id NOT IN ({$delete_placeholders})";
+				$wpdb->query(
+					$wpdb->prepare(
+						$delete_sql,
+						...array_merge(array($existing_id, $cloudways_server_id), $app_ids)
+					)
+				);
+			} else {
+				$wpdb->query(
+					$wpdb->prepare(
+						"DELETE FROM {$apps_table} WHERE {$delete_where}",
+						$existing_id,
+						$cloudways_server_id
+					)
+				);
+			}
+
 			// Lightweight rollup for dashboards/charts.
 			$metrics_table = cw_profit_table_server_metrics();
 			if ($existing_id > 0) {

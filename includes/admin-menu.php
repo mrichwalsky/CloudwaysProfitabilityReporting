@@ -9,13 +9,101 @@ function cw_profit_admin_init(): void {
 	add_action('admin_post_cw_profit_run_sync', 'cw_profit_handle_run_sync');
 	add_action('admin_post_cw_profit_save_server_cost', 'cw_profit_handle_save_server_cost');
 	add_action('admin_post_cw_profit_save_app', 'cw_profit_handle_save_app');
+	add_action('admin_post_cw_profit_export_servers_csv', 'cw_profit_handle_export_servers_csv');
+	add_action('admin_post_cw_profit_export_sites_csv', 'cw_profit_handle_export_sites_csv');
+	add_action('admin_head', 'cw_profit_hide_server_detail_submenu');
 	add_action('admin_enqueue_scripts', 'cw_profit_admin_enqueue_assets');
+	add_filter('parent_file', 'cw_profit_admin_parent_file');
+	add_filter('submenu_file', 'cw_profit_admin_submenu_file', 10, 2);
+	add_filter('admin_title', 'cw_profit_admin_title_server_detail', 10, 2);
+}
+
+/**
+ * Keep Cloudways Profitability expanded and highlight Servers when viewing server detail (hidden submenu).
+ */
+function cw_profit_admin_parent_file(string $parent_file): string {
+	$page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
+	if ($page === 'cw-profit-server') {
+		return 'cw-profit-dashboard';
+	}
+	return $parent_file;
+}
+
+/**
+ * WordPress may pass null here when no submenu is currently selected.
+ *
+ * @param string|null $submenu_file
+ * @param string      $parent_file
+ */
+function cw_profit_admin_submenu_file($submenu_file, $parent_file): string {
+	$page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
+	if ($page === 'cw-profit-server' && $parent_file === 'cw-profit-dashboard') {
+		return 'cw-profit-servers';
+	}
+	return is_string($submenu_file) ? $submenu_file : '';
+}
+
+/**
+ * Use the server label in the browser admin title on the server detail screen.
+ *
+ * @param string $admin_title Full admin title string.
+ * @param string $title       Page title segment from get_admin_page_title().
+ */
+function cw_profit_admin_title_server_detail(string $admin_title, string $title): string {
+	$page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
+	if ($page !== 'cw-profit-server') {
+		return $admin_title;
+	}
+	$server_id = isset($_GET['server_id']) ? sanitize_text_field(wp_unslash($_GET['server_id'])) : '';
+	if ($server_id === '') {
+		return $admin_title;
+	}
+	global $wpdb;
+	$servers_table = cw_profit_table_servers();
+	$label = $wpdb->get_var(
+		$wpdb->prepare(
+			"SELECT COALESCE(NULLIF(label, ''), %s) FROM {$servers_table} WHERE cloudways_server_id = %s LIMIT 1",
+			$server_id,
+			$server_id
+		)
+	);
+	if (!$label) {
+		$label = $server_id;
+	}
+	$new_title = sprintf(
+		/* translators: %s: server name or id */
+		__('Server: %s', 'cw-profit'),
+		$label
+	);
+	if ($title !== '') {
+		return str_replace($title, $new_title, $admin_title);
+	}
+	return $new_title . $admin_title;
+}
+
+/**
+ * Success notice after saving prices/costs (query arg from admin_post redirect).
+ */
+function cw_profit_render_saved_notice(): void {
+	if (!isset($_GET['cw_profit_saved'])) {
+		return;
+	}
+	$key = sanitize_key(wp_unslash($_GET['cw_profit_saved']));
+	$messages = array(
+		'server_cost' => __('Server monthly cost saved.', 'cw-profit'),
+		'client_price' => __('Client monthly price saved.', 'cw-profit'),
+		'app' => __('App monthly price saved.', 'cw-profit'),
+	);
+	if (!isset($messages[$key])) {
+		return;
+	}
+	echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($messages[$key]) . '</p></div>';
 }
 
 function cw_profit_admin_enqueue_assets(string $hook): void {
 	// Only load on our plugin pages.
 	$page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
-	if (!in_array($page, array('cw-profit-dashboard', 'cw-profit-apps', 'cw-profit-settings', 'cw-profit-server'), true)) {
+	if (!in_array($page, array('cw-profit-dashboard', 'cw-profit-servers', 'cw-profit-apps', 'cw-profit-settings', 'cw-profit-server'), true)) {
 		return;
 	}
 
@@ -92,15 +180,22 @@ function cw_profit_register_admin_menu(): void {
 		'cw_profit_render_settings_page'
 	);
 
-	// Hidden detail page (linked from dashboard).
+	// Detail page (linked from Servers list).
 	add_submenu_page(
-		null,
-		__('Server Detail', 'cw-profit'),
-		__('Server Detail', 'cw-profit'),
+		'cw-profit-dashboard',
+		__('Server detail', 'cw-profit'),
+		__('Server detail', 'cw-profit'),
 		$cap,
 		'cw-profit-server',
 		'cw_profit_render_server_detail_page'
 	);
+}
+
+/**
+ * Hide detail page from submenu while keeping it accessible directly.
+ */
+function cw_profit_hide_server_detail_submenu(): void {
+	remove_submenu_page('cw-profit-dashboard', 'cw-profit-server');
 }
 
 function cw_profit_render_servers_page(): void {
@@ -112,7 +207,7 @@ function cw_profit_render_servers_page(): void {
 
 	$last_sync = get_option(CW_PROFIT_OPTION_PREFIX . 'last_sync_at');
 	$run_sync_url = wp_nonce_url(admin_url('admin-post.php?action=cw_profit_run_sync'), 'cw_profit_run_sync');
-	$current_url = admin_url('admin.php?page=cw-profit-dashboard');
+	$current_url = admin_url('admin.php?page=cw-profit-servers');
 
 	$orderby = isset($_GET['orderby']) ? sanitize_key(wp_unslash($_GET['orderby'])) : 'label';
 	$order = isset($_GET['order']) ? strtolower(sanitize_key(wp_unslash($_GET['order']))) : 'asc';
@@ -134,9 +229,25 @@ function cw_profit_render_servers_page(): void {
 	}
 	$order_sql = $order === 'desc' ? 'DESC' : 'ASC';
 	$orderby_sql = $allowed_orderby[$orderby];
+	$export_url = wp_nonce_url(
+		add_query_arg(
+			array(
+				'action' => 'cw_profit_export_servers_csv',
+				'orderby' => $orderby,
+				'order' => $order,
+			),
+			admin_url('admin-post.php')
+		),
+		'cw_profit_export_servers_csv'
+	);
+	$sites_export_url = wp_nonce_url(
+		admin_url('admin-post.php?action=cw_profit_export_sites_csv'),
+		'cw_profit_export_sites_csv'
+	);
 
 	echo '<div class="wrap">';
-	echo '<h1>' . esc_html__('Servers', 'cw-profit') . '</h1>';
+	echo '<h1>' . esc_html(get_admin_page_title()) . '</h1>';
+	cw_profit_render_saved_notice();
 	cw_profit_render_attention_box();
 	echo '<p>' . esc_html__('Profitability by server.', 'cw-profit') . '</p>';
 	echo '<p><a class="button button-primary" href="' . esc_url($run_sync_url) . '">' . esc_html__('Run sync now', 'cw-profit') . '</a></p>';
@@ -189,6 +300,11 @@ function cw_profit_render_servers_page(): void {
 		}
 		return '<a href="' . esc_url($url) . '"><span>' . esc_html($label) . '</span><span class="screen-reader-text">' . esc_html($indicator) . '</span></a>' . esc_html($indicator);
 	};
+
+	echo '<p style="text-align:right;margin:8px 0 12px;">';
+	echo '<a class="button" href="' . esc_url($export_url) . '">' . esc_html__('Download servers CSV', 'cw-profit') . '</a> ';
+	echo '<a class="button" href="' . esc_url($sites_export_url) . '">' . esc_html__('Download sites CSV', 'cw-profit') . '</a>';
+	echo '</p>';
 
 	echo '<table class="widefat striped">';
 	echo '<thead><tr>';
@@ -294,6 +410,239 @@ function cw_profit_render_servers_page(): void {
 	echo '</div>';
 }
 
+function cw_profit_handle_export_servers_csv(): void {
+	if (!current_user_can('manage_options')) {
+		wp_die(__('Insufficient permissions.', 'cw-profit'));
+	}
+	check_admin_referer('cw_profit_export_servers_csv');
+
+	global $wpdb;
+
+	$orderby = isset($_GET['orderby']) ? sanitize_key(wp_unslash($_GET['orderby'])) : 'label';
+	$order = isset($_GET['order']) ? strtolower(sanitize_key(wp_unslash($_GET['order']))) : 'asc';
+	if ($order !== 'asc' && $order !== 'desc') {
+		$order = 'asc';
+	}
+
+	$allowed_orderby = array(
+		'label' => 'server_label',
+		'apps' => 'app_count',
+		'cost' => 'monthly_cost',
+		'revenue' => 'revenue',
+		'profit' => 'profit',
+		'margin' => 'margin',
+		'attention' => 'attention_count',
+	);
+	if (!isset($allowed_orderby[$orderby])) {
+		$orderby = 'label';
+	}
+	$order_sql = $order === 'desc' ? 'DESC' : 'ASC';
+	$orderby_sql = $allowed_orderby[$orderby];
+
+	$servers_table = cw_profit_table_servers();
+	$apps_table = cw_profit_table_apps();
+	$servers = $wpdb->get_results(
+		"SELECT
+			s.cloudways_server_id,
+			COALESCE(NULLIF(s.label, ''), s.cloudways_server_id) AS server_label,
+			s.monthly_cost,
+			s.monthly_client_price,
+			COUNT(a.id) AS app_count,
+			SUM(CASE WHEN a.needs_attention = 1 AND s.monthly_client_price IS NULL THEN 1 ELSE 0 END) AS attention_count,
+			COALESCE(s.monthly_client_price, COALESCE(SUM(COALESCE(a.monthly_price, 0)), 0)) AS revenue,
+			(COALESCE(s.monthly_client_price, COALESCE(SUM(COALESCE(a.monthly_price, 0)), 0)) - COALESCE(s.monthly_cost, 0)) AS profit,
+			CASE
+				WHEN COALESCE(s.monthly_client_price, COALESCE(SUM(COALESCE(a.monthly_price, 0)), 0)) > 0
+				THEN (COALESCE(s.monthly_client_price, COALESCE(SUM(COALESCE(a.monthly_price, 0)), 0)) - COALESCE(s.monthly_cost, 0)) / COALESCE(s.monthly_client_price, COALESCE(SUM(COALESCE(a.monthly_price, 0)), 0))
+				ELSE NULL
+			END AS margin
+		FROM {$servers_table} s
+		LEFT JOIN {$apps_table} a ON a.server_id = s.id
+		GROUP BY s.id
+		ORDER BY {$orderby_sql} {$order_sql}, server_label ASC",
+		ARRAY_A
+	);
+
+	nocache_headers();
+	$filename = 'cw-profit-servers-' . gmdate('Ymd-His') . '.csv';
+	header('Content-Type: text/csv; charset=utf-8');
+	header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+	$out = fopen('php://output', 'w');
+	if ($out === false) {
+		wp_die(__('Unable to generate CSV export.', 'cw-profit'));
+	}
+
+	cw_profit_write_csv_row(
+		$out,
+		array(
+			'cloudways_server_id',
+			'server_name',
+			'app_count',
+			'monthly_cost',
+			'revenue',
+			'revenue_source',
+			'profit',
+			'margin_percent',
+			'currency',
+		)
+	);
+	$currency = strtoupper((string) get_option(CW_PROFIT_OPTION_PREFIX . 'currency', 'USD'));
+	foreach ($servers as $server) {
+		$server_id = (string) $server['cloudways_server_id'];
+		$server_label = (string) ($server['server_label'] ?: $server_id);
+		$app_count = (int) $server['app_count'];
+		$cost = is_null($server['monthly_cost']) ? null : (float) $server['monthly_cost'];
+		$revenue = (float) $server['revenue'];
+		$profit = is_null($cost) ? null : $revenue - $cost;
+		$margin_percent = !is_null($profit) && $revenue > 0 ? ($profit / $revenue) * 100.0 : null;
+		$revenue_source = is_null($server['monthly_client_price']) ? 'sites' : 'server_level';
+
+		cw_profit_write_csv_row(
+			$out,
+			array(
+				$server_id,
+				$server_label,
+				(string) $app_count,
+				cw_profit_export_decimal($cost),
+				cw_profit_export_decimal($revenue),
+				$revenue_source,
+				cw_profit_export_decimal($profit),
+				cw_profit_export_decimal($margin_percent, 3),
+				$currency,
+			)
+		);
+	}
+	fclose($out);
+	exit;
+}
+
+/**
+ * Export one row per Cloudways application/site.
+ *
+ * When a server-level revenue override is set, site_revenue is intentionally blank because
+ * the plugin does not know how that total is divided between sites. server_revenue retains
+ * the server total and revenue_tracking_level explains the blank site value.
+ */
+function cw_profit_handle_export_sites_csv(): void {
+	if (!current_user_can('manage_options')) {
+		wp_die(__('Insufficient permissions.', 'cw-profit'));
+	}
+	check_admin_referer('cw_profit_export_sites_csv');
+
+	global $wpdb;
+	$servers_table = cw_profit_table_servers();
+	$apps_table = cw_profit_table_apps();
+	$sites = $wpdb->get_results(
+		"SELECT
+			a.cloudways_app_id,
+			a.app_name,
+			a.app_type,
+			a.primary_domain,
+			a.monthly_price,
+			a.cost_share_type,
+			a.manual_share_value,
+			a.needs_attention,
+			a.last_seen_at,
+			COALESCE(s.cloudways_server_id, a.cloudways_server_id) AS cloudways_server_id,
+			COALESCE(NULLIF(s.label, ''), s.cloudways_server_id, a.cloudways_server_id) AS server_name,
+			s.monthly_client_price
+		 FROM {$apps_table} a
+		 LEFT JOIN {$servers_table} s ON s.id = a.server_id
+		 ORDER BY server_name ASC, a.app_name ASC, a.cloudways_app_id ASC",
+		ARRAY_A
+	);
+
+	nocache_headers();
+	$filename = 'cw-profit-sites-' . gmdate('Ymd-His') . '.csv';
+	header('Content-Type: text/csv; charset=utf-8');
+	header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+	$out = fopen('php://output', 'w');
+	if ($out === false) {
+		wp_die(__('Unable to generate CSV export.', 'cw-profit'));
+	}
+
+	cw_profit_write_csv_row(
+		$out,
+		array(
+			'cloudways_app_id',
+			'site_name',
+			'primary_domain',
+			'app_type',
+			'cloudways_server_id',
+			'server_name',
+			'site_revenue',
+			'server_revenue',
+			'revenue_tracking_level',
+			'currency',
+			'cost_share_type',
+			'manual_share_value',
+			'needs_attention',
+			'last_seen_at_utc',
+		)
+	);
+
+	$currency = strtoupper((string) get_option(CW_PROFIT_OPTION_PREFIX . 'currency', 'USD'));
+	foreach ($sites as $site) {
+		$uses_server_revenue = !is_null($site['monthly_client_price']);
+		$site_revenue = $uses_server_revenue || is_null($site['monthly_price'])
+			? null
+			: (float) $site['monthly_price'];
+		$server_revenue = $uses_server_revenue ? (float) $site['monthly_client_price'] : null;
+
+		cw_profit_write_csv_row(
+			$out,
+			array(
+				(string) $site['cloudways_app_id'],
+				(string) ($site['app_name'] ?: $site['cloudways_app_id']),
+				(string) ($site['primary_domain'] ?? ''),
+				(string) ($site['app_type'] ?? ''),
+				(string) ($site['cloudways_server_id'] ?? ''),
+				(string) ($site['server_name'] ?? ''),
+				cw_profit_export_decimal($site_revenue),
+				cw_profit_export_decimal($server_revenue),
+				$uses_server_revenue ? 'server_level' : 'site_level',
+				$currency,
+				(string) ($site['cost_share_type'] ?? ''),
+				cw_profit_export_decimal(is_null($site['manual_share_value']) ? null : (float) $site['manual_share_value'], 4),
+				(string) ((int) $site['needs_attention']),
+				(string) ($site['last_seen_at'] ?? ''),
+			)
+		);
+	}
+
+	fclose($out);
+	exit;
+}
+
+/**
+ * Render a raw decimal for machine-readable exports without symbols or thousands separators.
+ */
+function cw_profit_export_decimal(?float $value, int $precision = 2): string {
+	return is_null($value) ? '' : number_format($value, $precision, '.', '');
+}
+
+/**
+ * Write a CSV row while preventing spreadsheet programs from interpreting text as a formula.
+ *
+ * @param resource $stream
+ * @param array<int,string> $fields
+ */
+function cw_profit_write_csv_row($stream, array $fields): void {
+	$safe_fields = array_map(
+		static function ($value): string {
+			$value = (string) $value;
+			if ($value !== '' && !is_numeric($value) && in_array($value[0], array('=', '+', '-', '@'), true)) {
+				return "'" . $value;
+			}
+			return $value;
+		},
+		$fields
+	);
+	fputcsv($stream, $safe_fields, ',', '"', '');
+}
+
 function cw_profit_render_dashboard_home_page(): void {
 	if (!current_user_can('manage_options')) {
 		wp_die(__('Insufficient permissions.', 'cw-profit'));
@@ -305,7 +654,7 @@ function cw_profit_render_dashboard_home_page(): void {
 	$run_sync_url = wp_nonce_url(admin_url('admin-post.php?action=cw_profit_run_sync'), 'cw_profit_run_sync');
 
 	echo '<div class="wrap">';
-	echo '<h1>' . esc_html__('Dashboard', 'cw-profit') . '</h1>';
+	echo '<h1>' . esc_html(get_admin_page_title()) . '</h1>';
 	cw_profit_render_attention_box();
 	echo '<p><a class="button button-primary" href="' . esc_url($run_sync_url) . '">' . esc_html__('Run sync now', 'cw-profit') . '</a></p>';
 	echo '<p><strong>' . esc_html__('Last sync:', 'cw-profit') . '</strong> ' . esc_html($last_sync ? $last_sync : __('Never', 'cw-profit')) . '</p>';
@@ -720,17 +1069,49 @@ function cw_profit_render_apps_page(): void {
 	global $wpdb;
 
 	echo '<div class="wrap">';
-	echo '<h1>' . esc_html__('Apps', 'cw-profit') . '</h1>';
+	echo '<h1>' . esc_html(get_admin_page_title()) . '</h1>';
+	cw_profit_render_saved_notice();
 	cw_profit_render_attention_box();
 
 	$apps_table = cw_profit_table_apps();
 	$servers_table = cw_profit_table_servers();
+	$app_search = isset($_GET['app_search']) ? sanitize_text_field(wp_unslash($_GET['app_search'])) : '';
+	$app_search_like = '%' . $wpdb->esc_like($app_search) . '%';
+	$where_sql = '';
+	if ($app_search !== '') {
+		$where_sql = $wpdb->prepare(
+			"WHERE (
+				COALESCE(NULLIF(a.app_name, ''), a.cloudways_app_id) LIKE %s
+				OR a.cloudways_app_id LIKE %s
+				OR COALESCE(NULLIF(a.primary_domain, ''), '') LIKE %s
+				OR COALESCE(NULLIF(s.label, ''), a.cloudways_server_id) LIKE %s
+				OR a.cloudways_server_id LIKE %s
+			)",
+			$app_search_like,
+			$app_search_like,
+			$app_search_like,
+			$app_search_like,
+			$app_search_like
+		);
+	}
+	$apps_page_url = admin_url('admin.php?page=cw-profit-apps');
+
+	echo '<form method="get" action="' . esc_url(admin_url('admin.php')) . '" style="display:flex;gap:8px;align-items:center;margin:10px 0 14px;">';
+	echo '<input type="hidden" name="page" value="cw-profit-apps" />';
+	echo '<label for="cw-profit-app-search" class="screen-reader-text">' . esc_html__('Search apps', 'cw-profit') . '</label>';
+	echo '<input id="cw-profit-app-search" type="search" name="app_search" value="' . esc_attr($app_search) . '" placeholder="' . esc_attr__('Search apps, server, domain, or ID', 'cw-profit') . '" class="regular-text" />';
+	echo '<input type="submit" class="button" value="' . esc_attr__('Search', 'cw-profit') . '" />';
+	if ($app_search !== '') {
+		echo '<a class="button button-link" href="' . esc_url($apps_page_url) . '">' . esc_html__('Clear', 'cw-profit') . '</a>';
+	}
+	echo '</form>';
 
 	$apps = $wpdb->get_results(
 		"SELECT a.*, s.label AS server_label,
 			CASE WHEN s.monthly_client_price IS NULL THEN a.needs_attention ELSE 0 END AS effective_needs_attention
 		 FROM {$apps_table} a
 		 LEFT JOIN {$servers_table} s ON s.id = a.server_id
+		 {$where_sql}
 		 ORDER BY effective_needs_attention DESC, a.app_name ASC, a.cloudways_app_id ASC",
 		ARRAY_A
 	);
@@ -815,19 +1196,19 @@ function cw_profit_render_server_detail_page(): void {
 		ARRAY_A
 	);
 
-	$back_url = add_query_arg(array('page' => 'cw-profit-dashboard'), admin_url('admin.php'));
+	$back_url = add_query_arg(array('page' => 'cw-profit-servers'), admin_url('admin.php'));
 	$save_cost_url = admin_url('admin-post.php?action=cw_profit_save_server_cost');
 	$save_app_url = admin_url('admin-post.php?action=cw_profit_save_app');
 
 	$totals = cw_profit_calculate_server_totals($server_id);
 
 	echo '<div class="wrap">';
-	echo '<h1>' . esc_html__('Server Detail', 'cw-profit') . '</h1>';
+	$server_heading = (string) ($server['label'] ?: $server_id);
+	echo '<h1>' . esc_html($server_heading) . '</h1>';
+	cw_profit_render_saved_notice();
 	cw_profit_render_attention_box();
 	echo '<p><a href="' . esc_url($back_url) . '">&larr; ' . esc_html__('Back to servers', 'cw-profit') . '</a></p>';
-
-	echo '<h2>' . esc_html((string) ($server['label'] ?: $server_id)) . '</h2>';
-	echo '<p><code>' . esc_html($server_id) . '</code></p>';
+	echo '<p class="description"><code>' . esc_html($server_id) . '</code></p>';
 
 	echo '<h3>' . esc_html__('Totals', 'cw-profit') . '</h3>';
 	echo '<ul>';
@@ -939,13 +1320,21 @@ function cw_profit_handle_save_server_cost(): void {
 		);
 	}
 
-	$redirect = add_query_arg(
-		array(
-			'page' => 'cw-profit-server',
-			'server_id' => $server_id,
-		),
-		admin_url('admin.php')
+	$saved_key = null;
+	if (array_key_exists('monthly_cost', $_POST)) {
+		$saved_key = 'server_cost';
+	}
+	if (array_key_exists('monthly_client_price', $_POST)) {
+		$saved_key = 'client_price';
+	}
+	$redirect_args = array(
+		'page' => 'cw-profit-server',
+		'server_id' => $server_id,
 	);
+	if ($saved_key !== null) {
+		$redirect_args['cw_profit_saved'] = $saved_key;
+	}
+	$redirect = add_query_arg($redirect_args, admin_url('admin.php'));
 	wp_safe_redirect($redirect);
 	exit;
 }
@@ -994,6 +1383,8 @@ function cw_profit_handle_save_app(): void {
 	if (!$redirect) {
 		$redirect = add_query_arg(array('page' => 'cw-profit-apps'), admin_url('admin.php'));
 	}
+	$redirect = remove_query_arg('cw_profit_saved', $redirect);
+	$redirect = add_query_arg('cw_profit_saved', 'app', $redirect);
 	wp_safe_redirect($redirect);
 	exit;
 }
@@ -1030,7 +1421,7 @@ function cw_profit_render_settings_page(): void {
 	$email_to = (string) get_option(CW_PROFIT_OPTION_PREFIX . 'daily_email_to', '');
 
 	echo '<div class="wrap">';
-	echo '<h1>' . esc_html__('Settings', 'cw-profit') . '</h1>';
+	echo '<h1>' . esc_html(get_admin_page_title()) . '</h1>';
 	cw_profit_render_attention_box();
 	echo '<form method="post">';
 	wp_nonce_field('cw_profit_save_settings', 'cw_profit_settings_nonce');

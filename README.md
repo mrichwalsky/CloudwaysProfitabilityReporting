@@ -26,6 +26,20 @@ WordPress admin plugin that syncs your Cloudways servers/apps and helps you trac
 - **Currency display**: set a 3-letter currency code (default `USD`) in Settings. USD is displayed with `$` for cleaner visuals.
 - **Data storage**: the plugin creates its own tables (see `includes/db.php`).
 
+## CSV exports
+
+The **Servers** admin page provides separate server and site CSV downloads. Monetary values are
+plain decimal numbers without currency symbols or thousands separators; the currency is included
+in its own column.
+
+- The server export contains the effective server revenue and identifies whether it comes from a
+  server-level price or the sum of site prices.
+- The site export contains `site_revenue` when revenue is tracked per site.
+- When a server-level revenue override is used, `site_revenue` is blank because that total is not
+  allocated to individual sites. In those rows, `revenue_tracking_level` is `server_level` and
+  `server_revenue` contains the server total for context. The repeated server total must not be
+  summed across site rows.
+
 ## Development
 - Main plugin file: `cloudways-profitability-tracker.php`
 - Key modules:
